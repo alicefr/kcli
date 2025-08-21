@@ -7,7 +7,7 @@
 {{ cluster }}-worker-{{ num }}:
  domain: {{ domain if config_type != 'azure' else '' }}
  enableroot: false
- image: {{ image }}
+ image: {{ worker_image | default(image, image) }}
  pool: {{ pool or config_pool }}
 {% if flavor != None %}
  flavor: {{ flavor }}

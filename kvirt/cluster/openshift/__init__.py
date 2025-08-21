@@ -14,6 +14,8 @@ import os
 import re
 from random import choice
 from shutil import copy2, move, rmtree, which
+import shutil
+import xml.etree.ElementTree as ET
 from socket import gethostbyname, create_connection
 from string import ascii_letters, digits
 from subprocess import call
@@ -601,6 +603,13 @@ def scale(config, plandir, cluster, overrides):
             pprint(f"Using image {cluster_image}")
             image = cluster_image
     data['image'] = image
+
+    # Handle worker image for scaling
+    worker_image = data.get('worker_image')
+    if worker_image is not None:
+        pprint(f"Using separate worker image for scaling: {worker_image}")
+        data['worker_image'] = worker_image
+
     old_baremetal_hosts = installparam.get('baremetal_hosts', [])
     new_baremetal_hosts = overrides.get('baremetal_hosts', [])
     baremetal_hosts = [entry for entry in new_baremetal_hosts if entry not in old_baremetal_hosts]
@@ -1012,6 +1021,51 @@ def create(config, plandir, cluster, overrides, dnsconfig=None):
             msg = f"Missing {image}. Indicate correct image in your parameters file..."
             return {'result': 'failure', 'reason': msg}
     overrides['image'] = image
+
+    # Handle worker image separately if specified (local file path)
+    worker_image_path = data.get('worker_image')
+    if worker_image_path is not None:
+        worker_image_path = os.path.expanduser(worker_image_path)
+        if not os.path.exists(worker_image_path):
+            return {'result': 'failure', 'reason': f"Worker image file not found: {worker_image_path}"}
+
+        # Extract filename and copy to VM directory
+        worker_image_name = os.path.basename(worker_image_path)
+        # Remove extension for image name
+        if worker_image_name.endswith(('.qcow2', '.img', '.vhd', '.vmdk')):
+            worker_image_name = os.path.splitext(worker_image_name)[0]
+
+        pprint(f"Using separate worker image from local path: {worker_image_path}")
+
+        # Check if image already exists in volume storage
+        worker_images = [v for v in k.volumes() if worker_image_name in v]
+        if not worker_images:
+            pprint(f"Copying worker image {worker_image_path} to storage pool")
+            # Get pool path and copy file directly
+            try:
+                pool_obj = k.conn.storagePoolLookupByName(config.pool)
+                pool_xml = pool_obj.XMLDesc(0)
+                root = ET.fromstring(pool_xml)
+                pool_path = root.find('target/path').text
+
+                # Determine target file extension
+                original_ext = os.path.splitext(worker_image_path)[1]
+                target_file = f"{worker_image_name}{original_ext}"
+                target_path = os.path.join(pool_path, target_file)
+
+                # Copy the file
+                shutil.copy2(worker_image_path, target_path)
+                pprint(f"Successfully copied {worker_image_path} to {target_path}")
+                # Refresh the storage pool
+                pool_obj.refresh(0)
+
+            except Exception as e:
+                return {'result': 'failure', 'reason': f"Failed to copy worker image: {str(e)}"}
+        else:
+            pprint(f"Worker image {worker_image_name} already exists in storage")
+
+        overrides['worker_image'] = worker_image_name
+
     static_networking_ctlplane, static_networking_worker = False, False
     macentries = []
     custom_names = {}
